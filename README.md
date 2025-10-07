@@ -1,22 +1,4 @@
-.login-header h2 {
-  margin: 0;
-  color: #1890ff;
-  font-size: 28px;
-  font-weight: 700;
-}
 
-.login-header p {
-  margin: 5px 0 0;
-  color: #8c8c8c;
-  font-size: 14px;
-}
-
-@media (max-width: 576px) {
-  .login-card {
-    max-width: 100%;
-  }
-}
-```
 
 ### File: frontend/src/components/Auth/ProtectedRoute.jsx
 ```javascript
