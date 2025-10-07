@@ -1060,4 +1060,961 @@ exports.generatePrescriptionPDF = async (prescription, doctor, patient, canvasIm
       if (doctor.hospitals && doctor.hospitals[0]) {
         const hospital = doctor.hospitals[0];
         
-        if (hospital.
+        if (hospital.logo) {
+          doc.image(hospital.logo, 50, 50, { width: 100 });
+        }
+        
+        doc.fontSize(18).text(hospital.name, { align: 'center' });
+        doc.fontSize(12).text(hospital.address, { align: 'center' });
+        doc.text(`${hospital.city}, ${hospital.state} - ${hospital.pincode}`, { align: 'center' });
+        doc.text(`Phone: ${hospital.phone}`, { align: 'center' });
+      }
+      
+      doc.moveDown(2);
+      
+      // Doctor Info
+      doc.fontSize(14).text(`Dr. ${doctor.user.name}`, { underline: true });
+      doc.fontSize(11).text(`${doctor.qualification} - ${doctor.specialization}`);
+      doc.text(`Reg. No: ${doctor.registrationNumber}`);
+      
+      doc.moveDown();
+      
+      // Patient Info
+      doc.fontSize(14).text('Patient Details:', { underline: true });
+      doc.fontSize(11).text(`Name: ${patient.name}`);
+      doc.text(`Age: ${patient.age} | Gender: ${patient.gender}`);
+      doc.text(`Contact: ${patient.contactNumber}`);
+      if (patient.bloodGroup) {
+        doc.text(`Blood Group: ${patient.bloodGroup}`);
+      }
+      
+      doc.moveDown();
+      doc.fontSize(10).text(`Date: ${new Date().toLocaleDateString()}`, { align: 'right' });
+      
+      // Canvas Pages (Page 2 onwards)
+      for (let i = 0; i < canvasImages.length; i++) {
+        doc.addPage();
+        doc.image(canvasImages[i], 50, 50, {
+          fit: [500, 700],
+          align: 'center'
+        });
+      }
+      
+      // Last Page: Signature
+      doc.addPage();
+      doc.moveDown(20);
+      
+      if (doctor.signature) {
+        doc.image(doctor.signature, 400, 650, { width: 150 });
+      }
+      
+      doc.fontSize(11).text('Doctor\'s Signature', 400, 720);
+      doc.text(`Dr. ${doctor.user.name}`, 400, 735);
+      doc.text(doctor.registrationNumber, 400, 750);
+      
+      doc.end();
+      
+      writeStream.on('finish', () => {
+        resolve(`/uploads/prescriptions/${fileName}`);
+      });
+      
+      writeStream.on('error', (error) => {
+        reject(error);
+      });
+      
+    } catch (error) {
+      reject(error);
+    }
+  });
+};
+```
+
+### File: backend/src/utils/imageCompressor.js
+```javascript
+const sharp = require('sharp');
+const path = require('path');
+const fs = require('fs');
+
+exports.compressImage = async (inputPath, outputPath = null, quality = 70) => {
+  try {
+    if (!outputPath) {
+      const ext = path.extname(inputPath);
+      const name = path.basename(inputPath, ext);
+      const dir = path.dirname(inputPath);
+      outputPath = path.join(dir, `${name}-compressed${ext}`);
+    }
+    
+    await sharp(inputPath)
+      .jpeg({ quality: quality, progressive: true })
+      .toFile(outputPath);
+    
+    return outputPath;
+  } catch (error) {
+    throw new Error(`Image compression failed: ${error.message}`);
+  }
+};
+
+exports.convertToWebP = async (inputPath, outputPath = null) => {
+  try {
+    if (!outputPath) {
+      const name = path.basename(inputPath, path.extname(inputPath));
+      const dir = path.dirname(inputPath);
+      outputPath = path.join(dir, `${name}.webp`);
+    }
+    
+    await sharp(inputPath)
+      .webp({ quality: 80 })
+      .toFile(outputPath);
+    
+    return outputPath;
+  } catch (error) {
+    throw new Error(`WebP conversion failed: ${error.message}`);
+  }
+};
+
+exports.resizeImage = async (inputPath, width, height, outputPath = null) => {
+  try {
+    if (!outputPath) {
+      const ext = path.extname(inputPath);
+      const name = path.basename(inputPath, ext);
+      const dir = path.dirname(inputPath);
+      outputPath = path.join(dir, `${name}-resized${ext}`);
+    }
+    
+    await sharp(inputPath)
+      .resize(width, height, {
+        fit: 'inside',
+        withoutEnlargement: true
+      })
+      .toFile(outputPath);
+    
+    return outputPath;
+  } catch (error) {
+    throw new Error(`Image resize failed: ${error.message}`);
+  }
+};
+```
+
+### File: backend/src/utils/twilioService.js
+```javascript
+const twilioClient = require('../config/twilio');
+
+exports.sendWhatsAppMessage = async (to, message, mediaUrl = null) => {
+  try {
+    const messageOptions = {
+      from: process.env.TWILIO_WHATSAPP_NUMBER,
+      to: `whatsapp:${to}`,
+      body: message
+    };
+    
+    if (mediaUrl) {
+      messageOptions.mediaUrl = [mediaUrl];
+    }
+    
+    const result = await twilioClient.messages.create(messageOptions);
+    
+    return {
+      success: true,
+      messageId: result.sid,
+      status: result.status
+    };
+  } catch (error) {
+    console.error('WhatsApp send error:', error);
+    throw new Error(`Failed to send WhatsApp message: ${error.message}`);
+  }
+};
+
+exports.sendPrescriptionViaWhatsApp = async (patientPhone, pdfUrl, doctorName) => {
+  try {
+    const message = `Hello! Your prescription from Dr. ${doctorName} is ready. Please find the attached PDF document.`;
+    
+    const fullPdfUrl = `${process.env.BACKEND_URL}${pdfUrl}`;
+    
+    return await exports.sendWhatsAppMessage(patientPhone, message, fullPdfUrl);
+  } catch (error) {
+    throw error;
+  }
+};
+```
+
+### File: backend/src/utils/emailService.js
+```javascript
+const nodemailer = require('nodemailer');
+
+const transporter = nodemailer.createTransport({
+  host: process.env.EMAIL_HOST,
+  port: process.env.EMAIL_PORT,
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
+
+exports.sendEmail = async (to, subject, html) => {
+  try {
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: to,
+      subject: subject,
+      html: html
+    };
+    
+    const info = await transporter.sendMail(mailOptions);
+    return info;
+  } catch (error) {
+    console.error('Email send error:', error);
+    throw error;
+  }
+};
+
+exports.sendApprovalEmail = async (user, approved) => {
+  const subject = approved ? 'Account Approved' : 'Account Rejected';
+  const message = approved 
+    ? 'Your account has been approved. You can now login and use the platform.'
+    : 'Your account registration has been rejected. Please contact support for more information.';
+  
+  const html = `
+    <h2>${subject}</h2>
+    <p>Hello ${user.name},</p>
+    <p>${message}</p>
+    <p>Best regards,<br/>Digital Prescription Team</p>
+  `;
+  
+  return await exports.sendEmail(user.email, subject, html);
+};
+```
+
+## Controllers
+
+### File: backend/src/controllers/authController.js
+```javascript
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const Doctor = require('../models/Doctor');
+const Laboratory = require('../models/Laboratory');
+const Admin = require('../models/Admin');
+
+const generateToken = (id) => {
+  return jwt.sign({ id }, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_EXPIRE
+  });
+};
+
+exports.register = async (req, res, next) => {
+  try {
+    const { email, password, name, role, ...additionalData } = req.body;
+    
+    // Check if user exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email already registered'
+      });
+    }
+    
+    // Create user
+    const user = await User.create({
+      email,
+      password,
+      name,
+      role,
+      isApproved: role === 'admin' ? true : false
+    });
+    
+    // Create role-specific profile
+    if (role === 'doctor') {
+      await Doctor.create({
+        user: user._id,
+        ...additionalData
+      });
+    } else if (role === 'laboratory') {
+      await Laboratory.create({
+        user: user._id,
+        ...additionalData
+      });
+    } else if (role === 'admin') {
+      await Admin.create({
+        user: user._id,
+        permissions: ['approve_users', 'view_analytics']
+      });
+    }
+    
+    const token = generateToken(user._id);
+    
+    res.status(201).json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        isApproved: user.isApproved
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.login = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide email and password'
+      });
+    }
+    
+    const user = await User.findOne({ email }).select('+password');
+    
+    if (!user || !(await user.comparePassword(password))) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+    
+    if (!user.isActive) {
+      return res.status(401).json({
+        success: false,
+        message: 'Account is deactivated'
+      });
+    }
+    
+    const token = generateToken(user._id);
+    
+    res.status(200).json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        isApproved: user.isApproved
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.googleAuth = async (req, res, next) => {
+  try {
+    const { googleId, email, name, avatar, role, ...additionalData } = req.body;
+    
+    let user = await User.findOne({ googleId });
+    
+    if (!user) {
+      user = await User.create({
+        googleId,
+        email,
+        name,
+        avatar,
+        role,
+        authProvider: 'google',
+        isApproved: role === 'admin' ? true : false
+      });
+      
+      // Create role-specific profile
+      if (role === 'doctor') {
+        await Doctor.create({
+          user: user._id,
+          ...additionalData
+        });
+      } else if (role === 'laboratory') {
+        await Laboratory.create({
+          user: user._id,
+          ...additionalData
+        });
+      }
+    }
+    
+    const token = generateToken(user._id);
+    
+    res.status(200).json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        isApproved: user.isApproved
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.facebookAuth = async (req, res, next) => {
+  try {
+    const { facebookId, email, name, avatar, role, ...additionalData } = req.body;
+    
+    let user = await User.findOne({ facebookId });
+    
+    if (!user) {
+      user = await User.create({
+        facebookId,
+        email,
+        name,
+        avatar,
+        role,
+        authProvider: 'facebook',
+        isApproved: role === 'admin' ? true : false
+      });
+      
+      // Create role-specific profile
+      if (role === 'doctor') {
+        await Doctor.create({
+          user: user._id,
+          ...additionalData
+        });
+      } else if (role === 'laboratory') {
+        await Laboratory.create({
+          user: user._id,
+          ...additionalData
+        });
+      }
+    }
+    
+    const token = generateToken(user._id);
+    
+    res.status(200).json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        isApproved: user.isApproved
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getMe = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user._id);
+    
+    let profile;
+    if (user.role === 'doctor') {
+      profile = await Doctor.findOne({ user: user._id }).populate('user');
+    } else if (user.role === 'laboratory') {
+      profile = await Laboratory.findOne({ user: user._id }).populate('user');
+    } else if (user.role === 'admin') {
+      profile = await Admin.findOne({ user: user._id }).populate('user');
+    }
+    
+    res.status(200).json({
+      success: true,
+      user,
+      profile
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+```
+
+### File: backend/src/controllers/doctorController.js
+```javascript
+const Doctor = require('../models/Doctor');
+const Patient = require('../models/Patient');
+const Prescription = require('../models/Prescription');
+const Note = require('../models/Note');
+const RareCase = require('../models/RareCase');
+const LabReport = require('../models/LabReport');
+
+exports.getDashboard = async (req, res, next) => {
+  try {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    
+    const totalPatients = await Patient.countDocuments({ doctor: doctor._id });
+    const totalPrescriptions = await Prescription.countDocuments({ doctor: doctor._id });
+    const rareCases = await RareCase.countDocuments({ doctor: doctor._id });
+    const recentPrescriptions = await Prescription.find({ doctor: doctor._id })
+      .populate('patient')
+      .sort('-createdAt')
+      .limit(10);
+    
+    // Statistics for charts
+    const last30Days = new Date();
+    last30Days.setDate(last30Days.getDate() - 30);
+    
+    const prescriptionStats = await Prescription.aggregate([
+      {
+        $match: {
+          doctor: doctor._id,
+          createdAt: { $gte: last30Days }
+        }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        totalPatients,
+        totalPrescriptions,
+        rareCases,
+        recentPrescriptions,
+        prescriptionStats
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateProfile = async (req, res, next) => {
+  try {
+    const doctor = await Doctor.findOneAndUpdate(
+      { user: req.user._id },
+      req.body,
+      { new: true, runValidators: true }
+    ).populate('user');
+    
+    res.status(200).json({
+      success: true,
+      data: doctor
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.uploadSignature = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please upload a signature image'
+      });
+    }
+    
+    const doctor = await Doctor.findOneAndUpdate(
+      { user: req.user._id },
+      { signature: `/uploads/${req.file.filename}` },
+      { new: true }
+    );
+    
+    res.status(200).json({
+      success: true,
+      data: doctor
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getPatients = async (req, res, next) => {
+  try {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    const patients = await Patient.find({ doctor: doctor._id })
+      .sort('-createdAt');
+    
+    res.status(200).json({
+      success: true,
+      count: patients.length,
+      data: patients
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getPatientDetails = async (req, res, next) => {
+  try {
+    const patient = await Patient.findById(req.params.id)
+      .populate('prescriptions')
+      .populate({
+        path: 'labReports',
+        populate: { path: 'laboratory' }
+      });
+    
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        message: 'Patient not found'
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      data: patient
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.createNote = async (req, res, next) => {
+  try {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    
+    const note = await Note.create({
+      doctor: doctor._id,
+      ...req.body
+    });
+    
+    res.status(201).json({
+      success: true,
+      data: note
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getNotes = async (req, res, next) => {
+  try {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    const notes = await Note.find({ doctor: doctor._id })
+      .sort('-createdAt');
+    
+    res.status(200).json({
+      success: true,
+      count: notes.length,
+      data: notes
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateNote = async (req, res, next) => {
+  try {
+    const note = await Note.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true, runValidators: true }
+    );
+    
+    if (!note) {
+      return res.status(404).json({
+        success: false,
+        message: 'Note not found'
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      data: note
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.deleteNote = async (req, res, next) => {
+  try {
+    const note = await Note.findByIdAndDelete(req.params.id);
+    
+    if (!note) {
+      return res.status(404).json({
+        success: false,
+        message: 'Note not found'
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: 'Note deleted successfully'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getRareCases = async (req, res, next) => {
+  try {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    const rareCases = await RareCase.find({ doctor: doctor._id })
+      .populate('patient')
+      .sort('-createdAt');
+    
+    res.status(200).json({
+      success: true,
+      count: rareCases.length,
+      data: rareCases
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.createRareCase = async (req, res, next) => {
+  try {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    
+    const rareCase = await RareCase.create({
+      doctor: doctor._id,
+      ...req.body
+    });
+    
+    res.status(201).json({
+      success: true,
+      data: rareCase
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+```
+
+### File: backend/src/controllers/prescriptionController.js
+```javascript
+const Prescription = require('../models/Prescription');
+const Patient = require('../models/Patient');
+const Doctor = require('../models/Doctor');
+const Subscription = require('../models/Subscription');
+const { generatePrescriptionPDF } = require('../utils/pdfGenerator');
+const { sendPrescriptionViaWhatsApp } = require('../utils/twilioService');
+
+exports.createPrescription = async (req, res, next) => {
+  try {
+    const doctor = await Doctor.findOne({ user: req.user._id }).populate('user');
+    const { patientId, canvasPages, diagnosis, symptoms, isRareCase, rareCaseDetails } = req.body;
+    
+    let patient = await Patient.findById(patientId);
+    
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        message: 'Patient not found'
+      });
+    }
+    
+    const prescription = await Prescription.create({
+      doctor: doctor._id,
+      patient: patient._id,
+      canvasPages,
+      diagnosis,
+      symptoms,
+      isRareCase,
+      rareCaseDetails,
+      status: 'draft'
+    });
+    
+    // Add prescription to patient
+    patient.prescriptions.push(prescription._id);
+    await patient.save();
+    
+    res.status(201).json({
+      success: true,
+      data: prescription
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updatePrescription = async (req, res, next) => {
+  try {
+    const prescription = await Prescription.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true, runValidators: true }
+    );
+    
+    if (!prescription) {
+      return res.status(404).json({
+        success: false,
+        message: 'Prescription not found'
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      data: prescription
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.completePrescription = async (req, res, next) => {
+  try {
+    const doctor = await Doctor.findOne({ user: req.user._id }).populate('user');
+    const prescription = await Prescription.findById(req.params.id)
+      .populate('patient');
+    
+    if (!prescription) {
+      return res.status(404).json({
+        success: false,
+        message: 'Prescription not found'
+      });
+    }
+    
+    // Generate PDF
+    const canvasImages = req.body.canvasImages; // Base64 images from frontend
+    const pdfUrl = await generatePrescriptionPDF(prescription, doctor, prescription.patient, canvasImages);
+    
+    prescription.pdfUrl = pdfUrl;
+    prescription.status = 'completed';
+    await prescription.save();
+    
+    // Update doctor's prescription count
+    doctor.prescriptionsCount += 1;
+    await doctor.save();
+    
+    // Update subscription count
+    if (req.subscription) {
+      req.subscription.prescriptionCount += 1;
+      await req.subscription.save();
+    }
+    
+    res.status(200).json({
+      success: true,
+      data: prescription
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.sendPrescription = async (req, res, next) => {
+  try {
+    const doctor = await Doctor.findOne({ user: req.user._id }).populate('user');
+    const prescription = await Prescription.findById(req.params.id)
+      .populate('patient');
+    
+    if (!prescription) {
+      return res.status(404).json({
+        success: false,
+        message: 'Prescription not found'
+      });
+    }
+    
+    if (!prescription.pdfUrl) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please complete the prescription first'
+      });
+    }
+    
+    const patient = prescription.patient;
+    const whatsappNumber = patient.whatsappNumber || patient.contactNumber;
+    
+    // Send via WhatsApp
+    const result = await sendPrescriptionViaWhatsApp(
+      whatsappNumber,
+      prescription.pdfUrl,
+      doctor.user.name
+    );
+    
+    prescription.sentViaWhatsApp = true;
+    prescription.whatsappMessageId = result.messageId;
+    prescription.status = 'sent';
+    await prescription.save();
+    
+    res.status(200).json({
+      success: true,
+      message: 'Prescription sent successfully',
+      data: prescription
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getPrescriptions = async (req, res, next) => {
+  try {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    const prescriptions = await Prescription.find({ doctor: doctor._id })
+      .populate('patient')
+      .sort('-createdAt');
+    
+    res.status(200).json({
+      success: true,
+      count: prescriptions.length,
+      data: prescriptions
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getPrescriptionById = async (req, res, next) => {
+  try {
+    const prescription = await Prescription.findById(req.params.id)
+      .populate('patient')
+      .populate({
+        path: 'doctor',
+        populate: { path: 'user' }
+      });
+    
+    if (!prescription) {
+      return res.status(404).json({
+        success: false,
+        message: 'Prescription not found'
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      data: prescription
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.deletePrescription = async (req, res, next) => {
+  try {
+    const prescription = await Prescription.findByIdAndDelete(req.params.id);
+    
+    if (!prescription) {
+      return res.status(404).json({
+        success: false,
+        message: 'Prescription not found'
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: 'Prescription deleted successfully'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.createPatient = async (req, res, next) => {
+  try {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    
+    const patient = await Patient.create({
+      ...req.body,
+      doctor: doctor._id
+    });
+    
+    doctor.patients.push(patient._id);
+    await doctor.save();
+    
+    res.status(201).json({
+      success: true,
+      data: patient
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+```
+
+I'll continue with more controller files in the next part. Would you like me to continue with the remaining backend files (lab controller, admin controller, payment controller, routes) and then move to the frontend React implementation?
