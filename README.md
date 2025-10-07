@@ -1,4 +1,1053 @@
-# Digital Prescription Application - Complete Setup Guide
+.login-header h2 {
+  margin: 0;
+  color: #1890ff;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.login-header p {
+  margin: 5px 0 0;
+  color: #8c8c8c;
+  font-size: 14px;
+}
+
+@media (max-width: 576px) {
+  .login-card {
+    max-width: 100%;
+  }
+}
+```
+
+### File: frontend/src/components/Auth/ProtectedRoute.jsx
+```javascript
+import React from 'react';
+import { Navigate } from 'react-router-dom';
+import { Spin } from 'antd';
+import { useAuth } from '../../context/AuthContext';
+
+const ProtectedRoute = ({ children, role }) => {
+  const { isAuthenticated, user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        minHeight: '100vh' 
+      }}>
+        <Spin size="large" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" />;
+  }
+
+  if (role && user.role !== role) {
+    return <Navigate to="/login" />;
+  }
+
+  if (!user.isApproved && user.role !== 'admin') {
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        minHeight: '100vh',
+        flexDirection: 'column'
+      }}>
+        <h2>Account Pending Approval</h2>
+        <p>Your account is awaiting admin approval. Please check back later.</p>
+      </div>
+    );
+  }
+
+  return children;
+};
+
+export default ProtectedRoute;
+```
+
+### File: frontend/src/components/Shared/Header.jsx
+```javascript
+import React from 'react';
+import { Layout, Avatar, Dropdown, Space, Typography } from 'antd';
+import { UserOutlined, LogoutOutlined, SettingOutlined } from '@ant-design/icons';
+import { useAuth } from '../../context/AuthContext';
+import { useNavigate } from 'react-router-dom';
+
+const { Header: AntHeader } = Layout;
+const { Text } = Typography;
+
+const Header = () => {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
+  const items = [
+    {
+      key: 'profile',
+      icon: <SettingOutlined />,
+      label: 'Profile Settings',
+      onClick: () => {
+        if (user.role === 'doctor') {
+          navigate('/doctor/profile');
+        }
+      }
+    },
+    {
+      type: 'divider'
+    },
+    {
+      key: 'logout',
+      icon: <LogoutOutlined />,
+      label: 'Logout',
+      onClick: handleLogout
+    }
+  ];
+
+  return (
+    <AntHeader style={{ 
+      background: '#fff', 
+      padding: '0 24px', 
+      display: 'flex', 
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+    }}>
+      <div>
+        <Text strong style={{ fontSize: '18px' }}>Digital Prescription System</Text>
+      </div>
+      <Dropdown menu={{ items }} placement="bottomRight">
+        <Space style={{ cursor: 'pointer' }}>
+          <Avatar 
+            src={user?.avatar} 
+            icon={!user?.avatar && <UserOutlined />}
+          />
+          <Text>{user?.name}</Text>
+        </Space>
+      </Dropdown>
+    </AntHeader>
+  );
+};
+
+export default Header;
+```
+
+### File: frontend/src/components/Shared/Sidebar.jsx
+```javascript
+import React, { useState } from 'react';
+import { Layout, Menu } from 'antd';
+import { useNavigate, useLocation } from 'react-router-dom';
+import {
+  DashboardOutlined,
+  FileAddOutlined,
+  HistoryOutlined,
+  ExperimentOutlined,
+  FileTextOutlined,
+  TeamOutlined,
+  UserOutlined,
+  UploadOutlined,
+  LinkOutlined,
+  CheckCircleOutlined,
+  BarChartOutlined,
+  CrownOutlined,
+  CreditCardOutlined
+} from '@ant-design/icons';
+import { useAuth } from '../../context/AuthContext';
+
+const { Sider } = Layout;
+
+const Sidebar = () => {
+  const [collapsed, setCollapsed] = useState(false);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { user } = useAuth();
+
+  const doctorMenuItems = [
+    {
+      key: '/doctor/dashboard',
+      icon: <DashboardOutlined />,
+      label: 'Dashboard'
+    },
+    {
+      key: '/doctor/prescription/new',
+      icon: <FileAddOutlined />,
+      label: 'New Prescription'
+    },
+    {
+      key: '/doctor/prescriptions',
+      icon: <HistoryOutlined />,
+      label: 'Prescription History'
+    },
+    {
+      key: '/doctor/patients',
+      icon: <TeamOutlined />,
+      label: 'Patients'
+    },
+    {
+      key: '/doctor/rare-cases',
+      icon: <ExperimentOutlined />,
+      label: 'Rare Cases'
+    },
+    {
+      key: '/doctor/notes',
+      icon: <FileTextOutlined />,
+      label: 'Notes'
+    },
+    {
+      key: '/doctor/profile',
+      icon: <UserOutlined />,
+      label: 'Profile'
+    },
+    {
+      key: '/subscription',
+      icon: <CreditCardOutlined />,
+      label: 'Subscription'
+    }
+  ];
+
+  const labMenuItems = [
+    {
+      key: '/lab/dashboard',
+      icon: <DashboardOutlined />,
+      label: 'Dashboard'
+    },
+    {
+      key: '/lab/upload',
+      icon: <UploadOutlined />,
+      label: 'Upload Reports'
+    },
+    {
+      key: '/lab/collaborations',
+      icon: <LinkOutlined />,
+      label: 'Collaborations'
+    },
+    {
+      key: '/subscription',
+      icon: <CreditCardOutlined />,
+      label: 'Subscription'
+    }
+  ];
+
+  const adminMenuItems = [
+    {
+      key: '/admin/dashboard',
+      icon: <DashboardOutlined />,
+      label: 'Dashboard'
+    },
+    {
+      key: '/admin/approvals',
+      icon: <CheckCircleOutlined />,
+      label: 'User Approvals'
+    },
+    {
+      key: '/admin/statistics',
+      icon: <BarChartOutlined />,
+      label: 'Statistics'
+    },
+    {
+      key: '/admin/admins',
+      icon: <CrownOutlined />,
+      label: 'Admin Management'
+    }
+  ];
+
+  const getMenuItems = () => {
+    switch (user?.role) {
+      case 'doctor':
+        return doctorMenuItems;
+      case 'laboratory':
+        return labMenuItems;
+      case 'admin':
+        return adminMenuItems;
+      default:
+        return [];
+    }
+  };
+
+  const handleMenuClick = ({ key }) => {
+    navigate(key);
+  };
+
+  return (
+    <Sider
+      collapsible
+      collapsed={collapsed}
+      onCollapse={setCollapsed}
+      style={{
+        overflow: 'auto',
+        height: '100vh',
+        position: 'fixed',
+        left: 0,
+        top: 0,
+        bottom: 0
+      }}
+    >
+      <div style={{ 
+        height: '64px', 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'center',
+        color: '#fff',
+        fontSize: '20px',
+        fontWeight: 'bold'
+      }}>
+        {collapsed ? 'DP' : 'Digital Rx'}
+      </div>
+      <Menu
+        theme="dark"
+        mode="inline"
+        selectedKeys={[location.pathname]}
+        items={getMenuItems()}
+        onClick={handleMenuClick}
+      />
+    </Sider>
+  );
+};
+
+export default Sidebar;
+```
+
+### File: frontend/src/components/Shared/Loading.jsx
+```javascript
+import React from 'react';
+import { Spin } from 'antd';
+
+const Loading = () => {
+  return (
+    <div style={{
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      minHeight: '400px'
+    }}>
+      <Spin size="large" />
+    </div>
+  );
+};
+
+export default Loading;
+```
+
+### File: frontend/src/components/Doctor/Dashboard.jsx
+```javascript
+import React, { useState, useEffect } from 'react';
+import { Layout, Card, Row, Col, Statistic, Table, Typography, Button } from 'antd';
+import {
+  FileTextOutlined,
+  TeamOutlined,
+  ExperimentOutlined,
+  PlusOutlined
+} from '@ant-design/icons';
+import { Line } from 'recharts';
+import { useNavigate } from 'react-router-dom';
+import Header from '../Shared/Header';
+import Sidebar from '../Shared/Sidebar';
+import Loading from '../Shared/Loading';
+import api from '../../services/api';
+import moment from 'moment';
+
+const { Content } = Layout;
+const { Title } = Typography;
+
+const Dashboard = () => {
+  const [loading, setLoading] = useState(true);
+  const [dashboardData, setDashboardData] = useState(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    fetchDashboardData();
+  }, []);
+
+  const fetchDashboardData = async () => {
+    try {
+      const response = await api.get('/doctor/dashboard');
+      setDashboardData(response.data);
+    } catch (error) {
+      console.error('Failed to fetch dashboard data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const columns = [
+    {
+      title: 'Patient Name',
+      dataIndex: ['patient', 'name'],
+      key: 'patientName'
+    },
+    {
+      title: 'Date',
+      dataIndex: 'createdAt',
+      key: 'date',
+      render: (date) => moment(date).format('DD MMM YYYY')
+    },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      key: 'status',
+      render: (status) => (
+        <span style={{
+          padding: '4px 12px',
+          borderRadius: '4px',
+          background: status === 'sent' ? '#52c41a' : status === 'completed' ? '#1890ff' : '#faad14',
+          color: '#fff'
+        }}>
+          {status.toUpperCase()}
+        </span>
+      )
+    },
+    {
+      title: 'Action',
+      key: 'action',
+      render: (_, record) => (
+        <Button type="link" onClick={() => navigate(`/doctor/prescription/edit/${record._id}`)}>
+          View
+        </Button>
+      )
+    }
+  ];
+
+  if (loading) return <Loading />;
+
+  return (
+    <Layout style={{ minHeight: '100vh' }}>
+      <Sidebar />
+      <Layout style={{ marginLeft: 200 }}>
+        <Header />
+        <Content style={{ margin: '24px 16px', padding: 24, background: '#fff' }}>
+          <div style={{ marginBottom: 24 }}>
+            <Title level={2}>Dashboard</Title>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              size="large"
+              onClick={() => navigate('/doctor/prescription/new')}
+            >
+              Create New Prescription
+            </Button>
+          </div>
+
+          <Row gutter={16} style={{ marginBottom: 24 }}>
+            <Col xs={24} sm={12} lg={8}>
+              <Card>
+                <Statistic
+                  title="Total Patients"
+                  value={dashboardData?.totalPatients || 0}
+                  prefix={<TeamOutlined />}
+                  valueStyle={{ color: '#3f8600' }}
+                />
+              </Card>
+            </Col>
+            <Col xs={24} sm={12} lg={8}>
+              <Card>
+                <Statistic
+                  title="Total Prescriptions"
+                  value={dashboardData?.totalPrescriptions || 0}
+                  prefix={<FileTextOutlined />}
+                  valueStyle={{ color: '#1890ff' }}
+                />
+              </Card>
+            </Col>
+            <Col xs={24} sm={12} lg={8}>
+              <Card>
+                <Statistic
+                  title="Rare Cases"
+                  value={dashboardData?.rareCases || 0}
+                  prefix={<ExperimentOutlined />}
+                  valueStyle={{ color: '#cf1322' }}
+                />
+              </Card>
+            </Col>
+          </Row>
+
+          <Card title="Recent Prescriptions" style={{ marginTop: 24 }}>
+            <Table
+              columns={columns}
+              dataSource={dashboardData?.recentPrescriptions || []}
+              rowKey="_id"
+              pagination={{ pageSize: 10 }}
+            />
+          </Card>
+        </Content>
+      </Layout>
+    </Layout>
+  );
+};
+
+export default Dashboard;
+```
+
+### File: frontend/src/components/Doctor/PrescriptionCanvas.jsx
+```javascript
+import React, { useState, useEffect, useRef } from 'react';
+import { Layout, Button, Space, message, Modal, Form, Input, Select, InputNumber, Tooltip } from 'antd';
+import {
+  SaveOutlined,
+  SendOutlined,
+  DownloadOutlined,
+  PlusOutlined,
+  DeleteOutlined,
+  UndoOutlined,
+  RedoOutlined
+} from '@ant-design/icons';
+import { fabric } from 'fabric';
+import { useParams, useNavigate } from 'react-router-dom';
+import Header from '../Shared/Header';
+import Sidebar from '../Shared/Sidebar';
+import DrawingToolbar from './DrawingToolbar';
+import api from '../../services/api';
+import { prescriptionService } from '../../services/prescriptionService';
+import jsPDF from 'jspdf';
+import './PrescriptionCanvas.css';
+
+const { Content } = Layout;
+const { TextArea } = Input;
+const { Option } = Select;
+
+const PrescriptionCanvas = () => {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const canvasRef = useRef(null);
+  const [canvas, setCanvas] = useState(null);
+  const [pages, setPages] = useState([{ id: 1, canvasData: null }]);
+  const [currentPage, setCurrentPage] = useState(0);
+  const [patientModalVisible, setPatientModalVisible] = useState(false);
+  const [sendModalVisible, setSendModalVisible] = useState(false);
+  const [patients, setPatients] = useState([]);
+  const [selectedPatient, setSelectedPatient] = useState(null);
+  const [prescriptionId, setPrescriptionId] = useState(id);
+  const [form] = Form.useForm();
+  const [sendForm] = Form.useForm();
+
+  useEffect(() => {
+    initCanvas();
+    fetchPatients();
+    
+    if (id) {
+      loadPrescription(id);
+    }
+
+    return () => {
+      if (canvas) {
+        canvas.dispose();
+      }
+    };
+  }, []);
+
+  const initCanvas = () => {
+    const fabricCanvas = new fabric.Canvas('prescription-canvas', {
+      width: 800,
+      height: 1000,
+      backgroundColor: '#ffffff',
+      isDrawingMode: false
+    });
+
+    fabricCanvas.freeDrawingBrush.width = 2;
+    fabricCanvas.freeDrawingBrush.color = '#000000';
+
+    setCanvas(fabricCanvas);
+  };
+
+  const fetchPatients = async () => {
+    try {
+      const response = await api.get('/doctor/patients');
+      setPatients(response.data);
+    } catch (error) {
+      message.error('Failed to fetch patients');
+    }
+  };
+
+  const loadPrescription = async (prescriptionId) => {
+    try {
+      const response = await prescriptionService.getPrescriptionById(prescriptionId);
+      const prescription = response.data;
+      
+      setSelectedPatient(prescription.patient);
+      
+      if (prescription.canvasPages && prescription.canvasPages.length > 0) {
+        setPages(prescription.canvasPages.map((page, index) => ({
+          id: index + 1,
+          canvasData: page.drawingData
+        })));
+        
+        if (canvas && prescription.canvasPages[0].drawingData) {
+          canvas.loadFromJSON(prescription.canvasPages[0].drawingData, () => {
+            canvas.renderAll();
+          });
+        }
+      }
+    } catch (error) {
+      message.error('Failed to load prescription');
+    }
+  };
+
+  const saveCurrentPage = () => {
+    if (canvas) {
+      const updatedPages = [...pages];
+      updatedPages[currentPage] = {
+        ...updatedPages[currentPage],
+        canvasData: canvas.toJSON()
+      };
+      setPages(updatedPages);
+    }
+  };
+
+  const handlePageChange = (pageIndex) => {
+    saveCurrentPage();
+    setCurrentPage(pageIndex);
+    
+    if (canvas && pages[pageIndex].canvasData) {
+      canvas.loadFromJSON(pages[pageIndex].canvasData, () => {
+        canvas.renderAll();
+      });
+    } else if (canvas) {
+      canvas.clear();
+      canvas.backgroundColor = '#ffffff';
+    }
+  };
+
+  const addPage = () => {
+    saveCurrentPage();
+    const newPage = { id: pages.length + 1, canvasData: null };
+    setPages([...pages, newPage]);
+    setCurrentPage(pages.length);
+    
+    if (canvas) {
+      canvas.clear();
+      canvas.backgroundColor = '#ffffff';
+    }
+  };
+
+  const deletePage = () => {
+    if (pages.length === 1) {
+      message.warning('Cannot delete the last page');
+      return;
+    }
+
+    const updatedPages = pages.filter((_, index) => index !== currentPage);
+    setPages(updatedPages);
+    
+    const newCurrentPage = currentPage > 0 ? currentPage - 1 : 0;
+    setCurrentPage(newCurrentPage);
+    
+    if (canvas && updatedPages[newCurrentPage].canvasData) {
+      canvas.loadFromJSON(updatedPages[newCurrentPage].canvasData, () => {
+        canvas.renderAll();
+      });
+    } else if (canvas) {
+      canvas.clear();
+      canvas.backgroundColor = '#ffffff';
+    }
+  };
+
+  const handleSave = async () => {
+    if (!selectedPatient) {
+      setPatientModalVisible(true);
+      return;
+    }
+
+    saveCurrentPage();
+
+    try {
+      const prescriptionData = {
+        patientId: selectedPatient._id,
+        canvasPages: pages.map((page, index) => ({
+          pageNumber: index + 1,
+          drawingData: page.canvasData
+        })),
+        status: 'draft'
+      };
+
+      let response;
+      if (prescriptionId) {
+        response = await prescriptionService.updatePrescription(prescriptionId, prescriptionData);
+      } else {
+        response = await prescriptionService.createPrescription(prescriptionData);
+        setPrescriptionId(response.data._id);
+      }
+
+      message.success('Prescription saved successfully');
+    } catch (error) {
+      message.error('Failed to save prescription');
+    }
+  };
+
+  const handleComplete = async () => {
+    if (!prescriptionId) {
+      message.error('Please save the prescription first');
+      return;
+    }
+
+    saveCurrentPage();
+
+    try {
+      const canvasImages = [];
+      
+      for (let i = 0; i < pages.length; i++) {
+        const tempCanvas = new fabric.Canvas();
+        tempCanvas.setWidth(800);
+        tempCanvas.setHeight(1000);
+        
+        if (pages[i].canvasData) {
+          await new Promise((resolve) => {
+            tempCanvas.loadFromJSON(pages[i].canvasData, () => {
+              const dataUrl = tempCanvas.toDataURL({ format: 'png', quality: 1 });
+              canvasImages.push(dataUrl);
+              resolve();
+            });
+          });
+        }
+      }
+
+      await prescriptionService.completePrescription(prescriptionId, canvasImages);
+      message.success('Prescription completed successfully');
+      setSendModalVisible(true);
+    } catch (error) {
+      message.error('Failed to complete prescription');
+    }
+  };
+
+  const handleSend = async (values) => {
+    try {
+      await prescriptionService.sendPrescription(prescriptionId);
+      message.success('Prescription sent via WhatsApp successfully');
+      setSendModalVisible(false);
+      navigate('/doctor/prescriptions');
+    } catch (error) {
+      message.error('Failed to send prescription');
+    }
+  };
+
+  const handleDownloadPDF = async () => {
+    if (!prescriptionId) {
+      message.error('Please complete the prescription first');
+      return;
+    }
+
+    try {
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const imgWidth = 190;
+      const imgHeight = 270;
+
+      for (let i = 0; i < pages.length; i++) {
+        if (i > 0) {
+          pdf.addPage();
+        }
+
+        const tempCanvas = new fabric.Canvas();
+        tempCanvas.setWidth(800);
+        tempCanvas.setHeight(1000);
+
+        if (pages[i].canvasData) {
+          await new Promise((resolve) => {
+            tempCanvas.loadFromJSON(pages[i].canvasData, () => {
+              const dataUrl = tempCanvas.toDataURL({ format: 'png', quality: 1 });
+              pdf.addImage(dataUrl, 'PNG', 10, 10, imgWidth, imgHeight);
+              resolve();
+            });
+          });
+        }
+      }
+
+      pdf.save(`prescription-${prescriptionId}.pdf`);
+      message.success('PDF downloaded successfully');
+    } catch (error) {
+      message.error('Failed to download PDF');
+    }
+  };
+
+  const handlePatientSelect = (values) => {
+    const patient = patients.find(p => p._id === values.patientId);
+    setSelectedPatient(patient);
+    setPatientModalVisible(false);
+    handleSave();
+  };
+
+  return (
+    <Layout style={{ minHeight: '100vh' }}>
+      <Sidebar />
+      <Layout style={{ marginLeft: 200 }}>
+        <Header />
+        <Content style={{ margin: '24px 16px', background: '#f0f2f5' }}>
+          <div className="prescription-container">
+            <div className="prescription-header">
+              <Space>
+                <Button icon={<SaveOutlined />} onClick={handleSave}>
+                  Save Draft
+                </Button>
+                <Button type="primary" icon={<SendOutlined />} onClick={handleComplete}>
+                  Complete & Send
+                </Button>
+                <Button icon={<DownloadOutlined />} onClick={handleDownloadPDF}>
+                  Download PDF
+                </Button>
+              </Space>
+
+              <Space>
+                {selectedPatient && (
+                  <span>Patient: <strong>{selectedPatient.name}</strong></span>
+                )}
+                <Button onClick={() => setPatientModalVisible(true)}>
+                  {selectedPatient ? 'Change Patient' : 'Select Patient'}
+                </Button>
+              </Space>
+            </div>
+
+            <div className="canvas-workspace">
+              <DrawingToolbar canvas={canvas} />
+              
+              <div className="canvas-area">
+                <div className="page-controls">
+                  <Space>
+                    {pages.map((page, index) => (
+                      <Button
+                        key={page.id}
+                        type={currentPage === index ? 'primary' : 'default'}
+                        onClick={() => handlePageChange(index)}
+                      >
+                        Page {index + 1}
+                      </Button>
+                    ))}
+                    <Tooltip title="Add Page">
+                      <Button icon={<PlusOutlined />} onClick={addPage} />
+                    </Tooltip>
+                    <Tooltip title="Delete Page">
+                      <Button
+                        icon={<DeleteOutlined />}
+                        onClick={deletePage}
+                        disabled={pages.length === 1}
+                        danger
+                      />
+                    </Tooltip>
+                  </Space>
+                </div>
+
+                <div className="canvas-wrapper">
+                  <canvas id="prescription-canvas" ref={canvasRef} />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <Modal
+            title="Select Patient"
+            open={patientModalVisible}
+            onCancel={() => setPatientModalVisible(false)}
+            footer={null}
+          >
+            <Form form={form} onFinish={handlePatientSelect} layout="vertical">
+              <Form.Item
+                name="patientId"
+                label="Patient"
+                rules={[{ required: true, message: 'Please select a patient' }]}
+              >
+                <Select
+                  showSearch
+                  placeholder="Select a patient"
+                  optionFilterProp="children"
+                  filterOption={(input, option) =>
+                    option.children.toLowerCase().indexOf(input.toLowerCase()) >= 0
+                  }
+                >
+                  {patients.map(patient => (
+                    <Option key={patient._id} value={patient._id}>
+                      {patient.name} - {patient.contactNumber}
+                    </Option>
+                  ))}
+                </Select>
+              </Form.Item>
+
+              <Form.Item>
+                <Button type="primary" htmlType="submit" block>
+                  Select Patient
+                </Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+
+          <Modal
+            title="Send Prescription"
+            open={sendModalVisible}
+            onCancel={() => setSendModalVisible(false)}
+            footer={null}
+          >
+            <Form form={sendForm} onFinish={handleSend} layout="vertical">
+              <p>Send this prescription to {selectedPatient?.name} via WhatsApp?</p>
+              <p>WhatsApp Number: {selectedPatient?.whatsappNumber || selectedPatient?.contactNumber}</p>
+
+              <Form.Item>
+                <Space>
+                  <Button type="primary" htmlType="submit">
+                    Send via WhatsApp
+                  </Button>
+                  <Button onClick={() => setSendModalVisible(false)}>
+                    Cancel
+                  </Button>
+                </Space>
+              </Form.Item>
+            </Form>
+          </Modal>
+        </Content>
+      </Layout>
+    </Layout>
+  );
+};
+
+export default PrescriptionCanvas;
+```
+
+### File: frontend/src/components/Doctor/PrescriptionCanvas.css
+```css
+.prescription-container {
+  background: #fff;
+  border-radius: 8px;
+  padding: 24px;
+}
+
+.prescription-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.canvas-workspace {
+  display: flex;
+  gap: 24px;
+}
+
+.canvas-area {
+  flex: 1;
+}
+
+.page-controls {
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #fafafa;
+  border-radius: 4px;
+}
+
+.canvas-wrapper {
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  overflow: auto;
+}
+
+#prescription-canvas {
+  border: 1px solid #d9d9d9;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+@media (max-width: 1200px) {
+  .canvas-workspace {
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 768px) {
+  .prescription-header {
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  
+  #prescription-canvas {
+    max-width: 100%;
+  }
+}
+```
+
+### File: frontend/src/components/Doctor/DrawingToolbar.jsx
+```javascript
+import React, { useState } from 'react';
+import { Card, Button, Space, Slider, ColorPicker, Tooltip, Divider } from 'antd';
+import {
+  EditOutlined,
+  HighlightOutlined,
+  BgColorsOutlined,
+  FormatPainterOutlined,
+  FontSizeOutlined,
+  DeleteOutlined,
+  UndoOutlined,
+  RedoOutlined,
+  DragOutlined
+} from '@ant-design/icons';
+import './DrawingToolbar.css';
+
+const DrawingToolbar = ({ canvas }) => {
+  const [drawingMode, setDrawingMode] = useState('select');
+  const [brushWidth, setBrushWidth] = useState(2);
+  const [brushColor, setBrushColor] = useState('#000000');
+
+  const handleToolChange = (tool) => {
+    if (!canvas) return;
+
+    setDrawingMode(tool);
+
+    switch (tool) {
+      case 'pen':
+        canvas.isDrawingMode = true;
+        canvas.freeDrawingBrush.width = brushWidth;
+        canvas.freeDrawingBrush.color = brushColor;
+        break;
+
+      case 'pencil':
+        canvas.isDrawingMode = true;
+        canvas.freeDrawingBrush.width = 1;
+        canvas.freeDrawingBrush.color = brushColor;
+        break;
+
+      case 'brush':
+        canvas.isDrawingMode = true;
+        canvas.freeDrawingBrush.width = brushWidth * 3;
+        canvas.freeDrawingBrush.color = brushColor;
+        break;
+
+      case 'highlighter':
+        canvas.isDrawingMode = true;
+        canvas.freeDrawingBrush.width = 20;
+        canvas.freeDrawingBrush.color = 'rgba(255, 255, 0, 0.3)';
+        break;
+
+      case 'eraser':
+        canvas.isDrawingMode = true;
+        canvas.freeDrawingBrush.width = 30;
+        canvas.freeDrawingBrush.color = '#ffffff';
+        break;
+
+      case 'text':
+        canvas.isDrawingMode = false;
+        addText();
+        break;
+
+      case 'select':
+      default:
+        canvas.isDrawingMode = false;
+        break;
+    }
+  };
+
+  const addText = () => {
+    if (!canvas) return;
+
+    const text = new fabric.IText('Type here...', {
+      left: 100,
+      top: 100,
+      fontFamily: 'Arial',
+      fontSize:# Digital Prescription Application - Complete Setup Guide
 
 ## Project Structure
 
