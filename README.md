@@ -2017,4 +2017,2151 @@ exports.createPatient = async (req, res, next) => {
 };
 ```
 
-I'll continue with more controller files in the next part. Would you like me to continue with the remaining backend files (lab controller, admin controller, payment controller, routes) and then move to the frontend React implementation?
+### File: backend/src/controllers/labController.js
+```javascript
+const Laboratory = require('../models/Laboratory');
+const LabReport = require('../models/LabReport');
+const Patient = require('../models/Patient');
+const Doctor = require('../models/Doctor');
+const Collaboration = require('../models/Collaboration');
+const { compressImage, resizeImage } = require('../utils/imageCompressor');
+const path = require('path');
+
+exports.getDashboard = async (req, res, next) => {
+  try {
+    const lab = await Laboratory.findOne({ user: req.user._id });
+    
+    const totalReports = await LabReport.countDocuments({ laboratory: lab._id });
+    const activeCollaborations = await Collaboration.countDocuments({
+      laboratory: lab._id,
+      status: 'approved'
+    });
+    
+    const recentReports = await LabReport.find({ laboratory: lab._id })
+      .populate('patient')
+      .populate('doctor')
+      .sort('-createdAt')
+      .limit(10);
+    
+    // Statistics
+    const last30Days = new Date();
+    last30Days.setDate(last30Days.getDate() - 30);
+    
+    const reportStats = await LabReport.aggregate([
+      {
+        $match: {
+          laboratory: lab._id,
+          createdAt: { $gte: last30Days }
+        }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+    
+    const reportTypeDistribution = await LabReport.aggregate([
+      { $match: { laboratory: lab._id } },
+      {
+        $group: {
+          _id: '$reportType',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        totalReports,
+        activeCollaborations,
+        recentReports,
+        reportStats,
+        reportTypeDistribution
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateProfile = async (req, res, next) => {
+  try {
+    const lab = await Laboratory.findOneAndUpdate(
+      { user: req.user._id },
+      req.body,
+      { new: true, runValidators: true }
+    ).populate('user');
+    
+    res.status(200).json({
+      success: true,
+      data: lab
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.uploadReport = async (req, res, next) => {
+  try {
+    const lab = await Laboratory.findOne({ user: req.user._id });
+    const { patientId, doctorId, reportType, reportName, description, testDate } = req.body;
+    
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please upload at least one file'
+      });
+    }
+    
+    const patient = await Patient.findById(patientId);
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        message: 'Patient not found'
+      });
+    }
+    
+    const processedFiles = [];
+    
+    for (const file of req.files) {
+      const fileType = file.mimetype.startsWith('image/') ? 'image' : 'pdf';
+      let compressedUrl = null;
+      
+      if (fileType === 'image') {
+        // Compress and resize large medical images
+        const compressedPath = await compressImage(file.path, null, 70);
+        const resizedPath = await resizeImage(compressedPath, 1920, 1080);
+        compressedUrl = `/uploads/${path.basename(resizedPath)}`;
+      }
+      
+      processedFiles.push({
+        originalName: file.originalname,
+        fileName: file.filename,
+        fileType,
+        fileUrl: `/uploads/${file.filename}`,
+        compressedUrl,
+        fileSize: file.size
+      });
+    }
+    
+    const labReport = await LabReport.create({
+      laboratory: lab._id,
+      patient: patientId,
+      doctor: doctorId,
+      reportType,
+      reportName,
+      description,
+      testDate,
+      files: processedFiles
+    });
+    
+    // Add report to patient
+    patient.labReports.push(labReport._id);
+    await patient.save();
+    
+    // Update lab stats
+    lab.reportsUploaded += 1;
+    await lab.save();
+    
+    res.status(201).json({
+      success: true,
+      data: labReport
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getReports = async (req, res, next) => {
+  try {
+    const lab = await Laboratory.findOne({ user: req.user._id });
+    const { patientId, doctorId, reportType } = req.query;
+    
+    const filter = { laboratory: lab._id };
+    if (patientId) filter.patient = patientId;
+    if (doctorId) filter.doctor = doctorId;
+    if (reportType) filter.reportType = reportType;
+    
+    const reports = await LabReport.find(filter)
+      .populate('patient')
+      .populate('doctor')
+      .sort('-createdAt');
+    
+    res.status(200).json({
+      success: true,
+      count: reports.length,
+      data: reports
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.requestCollaboration = async (req, res, next) => {
+  try {
+    const lab = await Laboratory.findOne({ user: req.user._id });
+    const { doctorId, hospital } = req.body;
+    
+    const existingCollaboration = await Collaboration.findOne({
+      laboratory: lab._id,
+      doctor: doctorId,
+      status: { $in: ['pending', 'approved'] }
+    });
+    
+    if (existingCollaboration) {
+      return res.status(400).json({
+        success: false,
+        message: 'Collaboration request already exists'
+      });
+    }
+    
+    const collaboration = await Collaboration.create({
+      laboratory: lab._id,
+      doctor: doctorId,
+      hospital,
+      requestedBy: 'laboratory'
+    });
+    
+    res.status(201).json({
+      success: true,
+      data: collaboration
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getCollaborations = async (req, res, next) => {
+  try {
+    const lab = await Laboratory.findOne({ user: req.user._id });
+    const collaborations = await Collaboration.find({ laboratory: lab._id })
+      .populate({
+        path: 'doctor',
+        populate: { path: 'user' }
+      })
+      .sort('-createdAt');
+    
+    res.status(200).json({
+      success: true,
+      count: collaborations.length,
+      data: collaborations
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getPatients = async (req, res, next) => {
+  try {
+    const lab = await Laboratory.findOne({ user: req.user._id });
+    
+    // Get all patients from approved collaborations
+    const collaborations = await Collaboration.find({
+      laboratory: lab._id,
+      status: 'approved'
+    }).populate('doctor');
+    
+    const doctorIds = collaborations.map(c => c.doctor._id);
+    
+    const patients = await Patient.find({
+      doctor: { $in: doctorIds }
+    }).populate('doctor');
+    
+    res.status(200).json({
+      success: true,
+      count: patients.length,
+      data: patients
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+```
+
+### File: backend/src/controllers/adminController.js
+```javascript
+const User = require('../models/User');
+const Doctor = require('../models/Doctor');
+const Laboratory = require('../models/Laboratory');
+const Admin = require('../models/Admin');
+const Prescription = require('../models/Prescription');
+const LabReport = require('../models/LabReport');
+const Subscription = require('../models/Subscription');
+const Collaboration = require('../models/Collaboration');
+const { sendApprovalEmail } = require('../utils/emailService');
+
+exports.getDashboard = async (req, res, next) => {
+  try {
+    const totalUsers = await User.countDocuments();
+    const totalDoctors = await Doctor.countDocuments();
+    const totalLabs = await Laboratory.countDocuments();
+    const pendingApprovals = await User.countDocuments({ isApproved: false });
+    
+    const totalPrescriptions = await Prescription.countDocuments();
+    const totalLabReports = await LabReport.countDocuments();
+    
+    const activeSubscriptions = await Subscription.countDocuments({
+      status: 'active',
+      endDate: { $gte: new Date() }
+    });
+    
+    // Revenue calculation
+    const revenueData = await Subscription.aggregate([
+      {
+        $match: {
+          status: 'active'
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: '$amount' },
+          avgRevenue: { $avg: '$amount' }
+        }
+      }
+    ]);
+    
+    // Usage trends
+    const last30Days = new Date();
+    last30Days.setDate(last30Days.getDate() - 30);
+    
+    const prescriptionTrends = await Prescription.aggregate([
+      {
+        $match: { createdAt: { $gte: last30Days } }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+    
+    const labReportTrends = await LabReport.aggregate([
+      {
+        $match: { createdAt: { $gte: last30Days } }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+    
+    const userRegistrationTrends = await User.aggregate([
+      {
+        $match: { createdAt: { $gte: last30Days } }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        totalUsers,
+        totalDoctors,
+        totalLabs,
+        pendingApprovals,
+        totalPrescriptions,
+        totalLabReports,
+        activeSubscriptions,
+        revenue: revenueData[0] || { totalRevenue: 0, avgRevenue: 0 },
+        trends: {
+          prescriptions: prescriptionTrends,
+          labReports: labReportTrends,
+          userRegistrations: userRegistrationTrends
+        }
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getPendingApprovals = async (req, res, next) => {
+  try {
+    const pendingUsers = await User.find({ isApproved: false })
+      .sort('-createdAt');
+    
+    const usersWithProfiles = await Promise.all(
+      pendingUsers.map(async (user) => {
+        let profile;
+        if (user.role === 'doctor') {
+          profile = await Doctor.findOne({ user: user._id });
+        } else if (user.role === 'laboratory') {
+          profile = await Laboratory.findOne({ user: user._id });
+        }
+        return { user, profile };
+      })
+    );
+    
+    res.status(200).json({
+      success: true,
+      count: usersWithProfiles.length,
+      data: usersWithProfiles
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.approveUser = async (req, res, next) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.params.userId,
+      { isApproved: true },
+      { new: true }
+    );
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    // Send approval email
+    await sendApprovalEmail(user, true);
+    
+    res.status(200).json({
+      success: true,
+      message: 'User approved successfully',
+      data: user
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.rejectUser = async (req, res, next) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.params.userId,
+      { isActive: false },
+      { new: true }
+    );
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    // Send rejection email
+    await sendApprovalEmail(user, false);
+    
+    res.status(200).json({
+      success: true,
+      message: 'User rejected successfully',
+      data: user
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getAllUsers = async (req, res, next) => {
+  try {
+    const { role, isApproved, isActive } = req.query;
+    
+    const filter = {};
+    if (role) filter.role = role;
+    if (isApproved !== undefined) filter.isApproved = isApproved === 'true';
+    if (isActive !== undefined) filter.isActive = isActive === 'true';
+    
+    const users = await User.find(filter).sort('-createdAt');
+    
+    res.status(200).json({
+      success: true,
+      count: users.length,
+      data: users
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.deactivateUser = async (req, res, next) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.params.userId,
+      { isActive: false },
+      { new: true }
+    );
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: 'User deactivated successfully',
+      data: user
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.activateUser = async (req, res, next) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.params.userId,
+      { isActive: true },
+      { new: true }
+    );
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: 'User activated successfully',
+      data: user
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.createAdmin = async (req, res, next) => {
+  try {
+    const { email, password, name, permissions } = req.body;
+    
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email already registered'
+      });
+    }
+    
+    const user = await User.create({
+      email,
+      password,
+      name,
+      role: 'admin',
+      isApproved: true
+    });
+    
+    const admin = await Admin.create({
+      user: user._id,
+      permissions: permissions || ['approve_users', 'view_analytics']
+    });
+    
+    res.status(201).json({
+      success: true,
+      data: { user, admin }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getAdmins = async (req, res, next) => {
+  try {
+    const admins = await Admin.find()
+      .populate('user')
+      .sort('-createdAt');
+    
+    res.status(200).json({
+      success: true,
+      count: admins.length,
+      data: admins
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.deleteAdmin = async (req, res, next) => {
+  try {
+    const admin = await Admin.findById(req.params.adminId);
+    
+    if (!admin) {
+      return res.status(404).json({
+        success: false,
+        message: 'Admin not found'
+      });
+    }
+    
+    if (admin.isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Cannot delete super admin'
+      });
+    }
+    
+    await User.findByIdAndDelete(admin.user);
+    await Admin.findByIdAndDelete(req.params.adminId);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Admin deleted successfully'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.approveCollaboration = async (req, res, next) => {
+  try {
+    const collaboration = await Collaboration.findByIdAndUpdate(
+      req.params.collaborationId,
+      {
+        status: 'approved',
+        approvedBy: req.user._id,
+        approvedAt: new Date()
+      },
+      { new: true }
+    );
+    
+    if (!collaboration) {
+      return res.status(404).json({
+        success: false,
+        message: 'Collaboration not found'
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: 'Collaboration approved successfully',
+      data: collaboration
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.rejectCollaboration = async (req, res, next) => {
+  try {
+    const { reason } = req.body;
+    
+    const collaboration = await Collaboration.findByIdAndUpdate(
+      req.params.collaborationId,
+      {
+        status: 'rejected',
+        rejectedReason: reason
+      },
+      { new: true }
+    );
+    
+    if (!collaboration) {
+      return res.status(404).json({
+        success: false,
+        message: 'Collaboration not found'
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: 'Collaboration rejected successfully',
+      data: collaboration
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getPendingCollaborations = async (req, res, next) => {
+  try {
+    const collaborations = await Collaboration.find({ status: 'pending' })
+      .populate({
+        path: 'doctor',
+        populate: { path: 'user' }
+      })
+      .populate({
+        path: 'laboratory',
+        populate: { path: 'user' }
+      })
+      .sort('-createdAt');
+    
+    res.status(200).json({
+      success: true,
+      count: collaborations.length,
+      data: collaborations
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getStatistics = async (req, res, next) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    const dateFilter = {};
+    if (startDate && endDate) {
+      dateFilter.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+    
+    // User statistics by role
+    const usersByRole = await User.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: '$role',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+    
+    // Prescription statistics
+    const prescriptionStats = await Prescription.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+    
+    // Top doctors by prescriptions
+    const topDoctors = await Prescription.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: '$doctor',
+          prescriptionCount: { $sum: 1 }
+        }
+      },
+      { $sort: { prescriptionCount: -1 } },
+      { $limit: 10 },
+      {
+        $lookup: {
+          from: 'doctors',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'doctor'
+        }
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'doctor.user',
+          foreignField: '_id',
+          as: 'user'
+        }
+      }
+    ]);
+    
+    // Top labs by reports
+    const topLabs = await LabReport.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: '$laboratory',
+          reportCount: { $sum: 1 }
+        }
+      },
+      { $sort: { reportCount: -1 } },
+      { $limit: 10 },
+      {
+        $lookup: {
+          from: 'laboratories',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'laboratory'
+        }
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'laboratory.user',
+          foreignField: '_id',
+          as: 'user'
+        }
+      }
+    ]);
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        usersByRole,
+        prescriptionStats,
+        topDoctors,
+        topLabs
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+```
+
+### File: backend/src/controllers/paymentController.js
+```javascript
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const Subscription = require('../models/Subscription');
+const User = require('../models/User');
+
+const PLANS = {
+  basic: {
+    name: 'Basic Plan',
+    amount: 200000, // ₹2000 in paise
+    prescriptionLimit: 100,
+    interval: 'month'
+  },
+  premium: {
+    name: 'Premium Plan',
+    amount: 500000, // ₹5000 in paise
+    prescriptionLimit: null, // Unlimited
+    interval: 'month'
+  }
+};
+
+exports.createCheckoutSession = async (req, res, next) => {
+  try {
+    const { plan } = req.body;
+    
+    if (!PLANS[plan]) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid plan selected'
+      });
+    }
+    
+    const planDetails = PLANS[plan];
+    
+    // Create Stripe customer
+    let customer;
+    const user = await User.findById(req.user._id);
+    
+    if (user.stripeCustomerId) {
+      customer = await stripe.customers.retrieve(user.stripeCustomerId);
+    } else {
+      customer = await stripe.customers.create({
+        email: user.email,
+        name: user.name,
+        metadata: {
+          userId: user._id.toString()
+        }
+      });
+      
+      user.stripeCustomerId = customer.id;
+      await user.save();
+    }
+    
+    // Create checkout session
+    const session = await stripe.checkout.sessions.create({
+      customer: customer.id,
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: 'inr',
+            product_data: {
+              name: planDetails.name,
+              description: planDetails.prescriptionLimit 
+                ? `Up to ${planDetails.prescriptionLimit} prescriptions per month`
+                : 'Unlimited prescriptions'
+            },
+            unit_amount: planDetails.amount,
+            recurring: {
+              interval: planDetails.interval
+            }
+          },
+          quantity: 1
+        }
+      ],
+      mode: 'subscription',
+      success_url: `${process.env.FRONTEND_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL}/payment/cancel`,
+      metadata: {
+        userId: req.user._id.toString(),
+        plan: plan
+      }
+    });
+    
+    res.status(200).json({
+      success: true,
+      sessionId: session.id,
+      url: session.url
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.handleWebhook = async (req, res, next) => {
+  const sig = req.headers['stripe-signature'];
+  
+  let event;
+  
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+  
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed':
+        await handleCheckoutComplete(event.data.object);
+        break;
+      
+      case 'invoice.payment_succeeded':
+        await handlePaymentSuccess(event.data.object);
+        break;
+      
+      case 'invoice.payment_failed':
+        await handlePaymentFailed(event.data.object);
+        break;
+      
+      case 'customer.subscription.deleted':
+        await handleSubscriptionCancelled(event.data.object);
+        break;
+      
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
+    }
+    
+    res.json({ received: true });
+  } catch (error) {
+    console.error('Webhook handler error:', error);
+    res.status(500).json({ error: 'Webhook handler failed' });
+  }
+};
+
+const handleCheckoutComplete = async (session) => {
+  const userId = session.metadata.userId;
+  const plan = session.metadata.plan;
+  const planDetails = PLANS[plan];
+  
+  const endDate = new Date();
+  endDate.setMonth(endDate.getMonth() + 1);
+  
+  const subscription = await Subscription.create({
+    user: userId,
+    plan: plan,
+    amount: planDetails.amount / 100, // Convert from paise to rupees
+    prescriptionLimit: planDetails.prescriptionLimit,
+    endDate: endDate,
+    stripeSubscriptionId: session.subscription,
+    stripeCustomerId: session.customer,
+    status: 'active'
+  });
+  
+  await User.findByIdAndUpdate(userId, {
+    subscription: subscription._id
+  });
+};
+
+const handlePaymentSuccess = async (invoice) => {
+  const subscriptionId = invoice.subscription;
+  
+  await Subscription.findOneAndUpdate(
+    { stripeSubscriptionId: subscriptionId },
+    {
+      status: 'active',
+      prescriptionCount: 0, // Reset count on renewal
+      $inc: { 'endDate': 30 * 24 * 60 * 60 * 1000 } // Add 30 days
+    }
+  );
+};
+
+const handlePaymentFailed = async (invoice) => {
+  const subscriptionId = invoice.subscription;
+  
+  await Subscription.findOneAndUpdate(
+    { stripeSubscriptionId: subscriptionId },
+    { status: 'cancelled' }
+  );
+};
+
+const handleSubscriptionCancelled = async (subscription) => {
+  await Subscription.findOneAndUpdate(
+    { stripeSubscriptionId: subscription.id },
+    {
+      status: 'cancelled',
+      autoRenew: false
+    }
+  );
+};
+
+exports.getSubscription = async (req, res, next) => {
+  try {
+    const subscription = await Subscription.findOne({
+      user: req.user._id,
+      status: 'active',
+      endDate: { $gte: new Date() }
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: subscription
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.cancelSubscription = async (req, res, next) => {
+  try {
+    const subscription = await Subscription.findOne({
+      user: req.user._id,
+      status: 'active'
+    });
+    
+    if (!subscription) {
+      return res.status(404).json({
+        success: false,
+        message: 'No active subscription found'
+      });
+    }
+    
+    // Cancel on Stripe
+    await stripe.subscriptions.update(subscription.stripeSubscriptionId, {
+      cancel_at_period_end: true
+    });
+    
+    subscription.autoRenew = false;
+    await subscription.save();
+    
+    res.status(200).json({
+      success: true,
+      message: 'Subscription will be cancelled at the end of billing period',
+      data: subscription
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getPlans = async (req, res, next) => {
+  try {
+    res.status(200).json({
+      success: true,
+      data: Object.keys(PLANS).map(key => ({
+        id: key,
+        ...PLANS[key],
+        amountInRupees: PLANS[key].amount / 100
+      }))
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+```
+
+## Routes
+
+### File: backend/src/routes/auth.js
+```javascript
+const express = require('express');
+const router = express.Router();
+const {
+  register,
+  login,
+  googleAuth,
+  facebookAuth,
+  getMe
+} = require('../controllers/authController');
+const { protect } = require('../middleware/auth');
+
+router.post('/register', register);
+router.post('/login', login);
+router.post('/google', googleAuth);
+router.post('/facebook', facebookAuth);
+router.get('/me', protect, getMe);
+
+module.exports = router;
+```
+
+### File: backend/src/routes/doctor.js
+```javascript
+const express = require('express');
+const router = express.Router();
+const {
+  getDashboard,
+  updateProfile,
+  uploadSignature,
+  getPatients,
+  getPatientDetails,
+  createNote,
+  getNotes,
+  updateNote,
+  deleteNote,
+  getRareCases,
+  createRareCase
+} = require('../controllers/doctorController');
+const { protect, checkApproval, checkSubscription } = require('../middleware/auth');
+const { authorize } = require('../middleware/roleCheck');
+const { upload } = require('../middleware/uploadHandler');
+
+// All routes require authentication and doctor role
+router.use(protect, authorize('doctor'), checkApproval);
+
+router.get('/dashboard', getDashboard);
+router.put('/profile', updateProfile);
+router.post('/signature', upload.single('signature'), uploadSignature);
+router.get('/patients', getPatients);
+router.get('/patients/:id', getPatientDetails);
+
+// Notes
+router.route('/notes')
+  .get(getNotes)
+  .post(createNote);
+
+router.route('/notes/:id')
+  .put(updateNote)
+  .delete(deleteNote);
+
+// Rare Cases
+router.route('/rare-cases')
+  .get(getRareCases)
+  .post(createRareCase);
+
+module.exports = router;
+```
+
+### File: backend/src/routes/lab.js
+```javascript
+const express = require('express');
+const router = express.Router();
+const {
+  getDashboard,
+  updateProfile,
+  uploadReport,
+  getReports,
+  requestCollaboration,
+  getCollaborations,
+  getPatients
+} = require('../controllers/labController');
+const { protect, checkApproval, checkSubscription } = require('../middleware/auth');
+const { authorize } = require('../middleware/roleCheck');
+const { upload } = require('../middleware/uploadHandler');
+
+// All routes require authentication and laboratory role
+router.use(protect, authorize('laboratory'), checkApproval);
+
+router.get('/dashboard', getDashboard);
+router.put('/profile', updateProfile);
+router.post('/reports', checkSubscription, upload.array('files', 10), uploadReport);
+router.get('/reports', getReports);
+router.post('/collaborations', requestCollaboration);
+router.get('/collaborations', getCollaborations);
+router.get('/patients', getPatients);
+
+module.exports = router;
+```
+
+### File: backend/src/routes/admin.js
+```javascript
+const express = require('express');
+const router = express.Router();
+const {
+  getDashboard,
+  getPendingApprovals,
+  approveUser,
+  rejectUser,
+  getAllUsers,
+  deactivateUser,
+  activateUser,
+  createAdmin,
+  getAdmins,
+  deleteAdmin,
+  approveCollaboration,
+  rejectCollaboration,
+  getPendingCollaborations,
+  getStatistics
+} = require('../controllers/adminController');
+const { protect, checkApproval } = require('../middleware/auth');
+const { authorize } = require('../middleware/roleCheck');
+
+// All routes require authentication and admin role
+router.use(protect, authorize('admin'), checkApproval);
+
+router.get('/dashboard', getDashboard);
+router.get('/statistics', getStatistics);
+
+// User management
+router.get('/users', getAllUsers);
+router.get('/pending-approvals', getPendingApprovals);
+router.put('/users/:userId/approve', approveUser);
+router.put('/users/:userId/reject', rejectUser);
+router.put('/users/:userId/deactivate', deactivateUser);
+router.put('/users/:userId/activate', activateUser);
+
+// Admin management
+router.route('/admins')
+  .get(getAdmins)
+  .post(createAdmin);
+
+router.delete('/admins/:adminId', deleteAdmin);
+
+// Collaboration management
+router.get('/collaborations/pending', getPendingCollaborations);
+router.put('/collaborations/:collaborationId/approve', approveCollaboration);
+router.put('/collaborations/:collaborationId/reject', rejectCollaboration);
+
+module.exports = router;
+```
+
+### File: backend/src/routes/prescription.js
+```javascript
+const express = require('express');
+const router = express.Router();
+const {
+  createPrescription,
+  updatePrescription,
+  completePrescription,
+  sendPrescription,
+  getPrescriptions,
+  getPrescriptionById,
+  deletePrescription,
+  createPatient
+} = require('../controllers/prescriptionController');
+const { protect, checkApproval, checkSubscription } = require('../middleware/auth');
+const { authorize } = require('../middleware/roleCheck');
+
+// All routes require authentication and doctor role
+router.use(protect, authorize('doctor'), checkApproval);
+
+router.route('/')
+  .get(getPrescriptions)
+  .post(checkSubscription, createPrescription);
+
+router.route('/:id')
+  .get(getPrescriptionById)
+  .put(updatePrescription)
+  .delete(deletePrescription);
+
+router.put('/:id/complete', completePrescription);
+router.post('/:id/send', sendPrescription);
+
+// Patient routes
+router.post('/patients', createPatient);
+
+module.exports = router;
+```
+
+### File: backend/src/routes/payment.js
+```javascript
+const express = require('express');
+const router = express.Router();
+const {
+  createCheckoutSession,
+  handleWebhook,
+  getSubscription,
+  cancelSubscription,
+  getPlans
+} = require('../controllers/paymentController');
+const { protect } = require('../middleware/auth');
+
+router.get('/plans', getPlans);
+router.post('/create-checkout-session', protect, createCheckoutSession);
+router.post('/webhook', express.raw({ type: 'application/json' }), handleWebhook);
+router.get('/subscription', protect, getSubscription);
+router.post('/cancel-subscription', protect, cancelSubscription);
+
+module.exports = router;
+```
+
+## Frontend Implementation
+
+### File: frontend/package.json
+```json
+{
+  "name": "digital-prescription-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@ant-design/icons": "^5.2.6",
+    "@stripe/react-stripe-js": "^2.4.0",
+    "@stripe/stripe-js": "^2.2.0",
+    "antd": "^5.11.5",
+    "axios": "^1.6.2",
+    "fabric": "^5.3.0",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^2.5.1",
+    "moment": "^2.29.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-facebook-login": "^4.1.1",
+    "react-google-login": "^5.2.2",
+    "react-router-dom": "^6.20.1",
+    "react-scripts": "5.0.1",
+    "recharts": "^2.10.3"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
+```
+
+### File: frontend/src/index.jsx
+```javascript
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import './index.css';
+import App from './App';
+import { ConfigProvider } from 'antd';
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  <React.StrictMode>
+    <ConfigProvider
+      theme={{
+        token: {
+          colorPrimary: '#1890ff',
+          borderRadius: 6
+        }
+      }}
+    >
+      <App />
+    </ConfigProvider>
+  </React.StrictMode>
+);
+```
+
+### File: frontend/src/App.jsx
+```javascript
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider } from './context/AuthContext';
+import Login from './components/Auth/Login';
+import ProtectedRoute from './components/Auth/ProtectedRoute';
+import DoctorDashboard from './components/Doctor/Dashboard';
+import PrescriptionCanvas from './components/Doctor/PrescriptionCanvas';
+import PrescriptionHistory from './components/Doctor/PrescriptionHistory';
+import RareCases from './components/Doctor/RareCases';
+import Notes from './components/Doctor/Notes';
+import PatientView from './components/Doctor/PatientView';
+import ProfileEdit from './components/Doctor/ProfileEdit';
+import LabDashboard from './components/Laboratory/LabDashboard';
+import UploadReports from './components/Laboratory/UploadReports';
+import Collaborations from './components/Laboratory/Collaborations';
+import AdminDashboard from './components/Admin/AdminDashboard';
+import UserApproval from './components/Admin/UserApproval';
+import Statistics from './components/Admin/Statistics';
+import AdminManagement from './components/Admin/AdminManagement';
+import SubscriptionPortal from './components/Payment/SubscriptionPortal';
+import './App.css';
+
+function App() {
+  return (
+    <Router>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          
+          {/* Doctor Routes */}
+          <Route
+            path="/doctor/dashboard"
+            element={
+              <ProtectedRoute role="doctor">
+                <DoctorDashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/doctor/prescription/new"
+            element={
+              <ProtectedRoute role="doctor">
+                <PrescriptionCanvas />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/doctor/prescription/edit/:id"
+            element={
+              <ProtectedRoute role="doctor">
+                <PrescriptionCanvas />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/doctor/prescriptions"
+            element={
+              <ProtectedRoute role="doctor">
+                <PrescriptionHistory />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/doctor/rare-cases"
+            element={
+              <ProtectedRoute role="doctor">
+                <RareCases />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/doctor/notes"
+            element={
+              <ProtectedRoute role="doctor">
+                <Notes />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/doctor/patients"
+            element={
+              <ProtectedRoute role="doctor">
+                <PatientView />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/doctor/profile"
+            element={
+              <ProtectedRoute role="doctor">
+                <ProfileEdit />
+              </ProtectedRoute>
+            }
+          />
+          
+          {/* Laboratory Routes */}
+          <Route
+            path="/lab/dashboard"
+            element={
+              <ProtectedRoute role="laboratory">
+                <LabDashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/lab/upload"
+            element={
+              <ProtectedRoute role="laboratory">
+                <UploadReports />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/lab/collaborations"
+            element={
+              <ProtectedRoute role="laboratory">
+                <Collaborations />
+              </ProtectedRoute>
+            }
+          />
+          
+          {/* Admin Routes */}
+          <Route
+            path="/admin/dashboard"
+            element={
+              <ProtectedRoute role="admin">
+                <AdminDashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/approvals"
+            element={
+              <ProtectedRoute role="admin">
+                <UserApproval />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/statistics"
+            element={
+              <ProtectedRoute role="admin">
+                <Statistics />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/admins"
+            element={
+              <ProtectedRoute role="admin">
+                <AdminManagement />
+              </ProtectedRoute>
+            }
+          />
+          
+          {/* Payment Routes */}
+          <Route
+            path="/subscription"
+            element={
+              <ProtectedRoute>
+                <SubscriptionPortal />
+              </ProtectedRoute>
+            }
+          />
+          
+          <Route path="/" element={<Navigate to="/login" />} />
+        </Routes>
+      </AuthProvider>
+    </Router>
+  );
+}
+
+export default App;
+```
+
+### File: frontend/src/App.css
+```css
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f0f2f5;
+}
+
+.app-container {
+  min-height: 100vh;
+  display: flex;
+}
+
+.main-content {
+  flex: 1;
+  padding: 24px;
+  margin-left: 200px;
+  transition: margin-left 0.2s;
+}
+
+.main-content.collapsed {
+  margin-left: 80px;
+}
+
+@media (max-width: 768px) {
+  .main-content {
+    margin-left: 0;
+    padding: 16px;
+  }
+}
+```
+
+### File: frontend/src/context/AuthContext.jsx
+```javascript
+import React, { createContext, useState, useEffect, useContext } from 'react';
+import { authService } from '../services/authService';
+
+const AuthContext = createContext();
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+};
+
+export const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  useEffect(() => {
+    checkAuth();
+  }, []);
+
+  const checkAuth = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (token) {
+        const response = await authService.getMe();
+        setUser(response.user);
+        setProfile(response.profile);
+        setIsAuthenticated(true);
+      }
+    } catch (error) {
+      console.error('Auth check failed:', error);
+      logout();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const login = async (credentials) => {
+    try {
+      const response = await authService.login(credentials);
+      localStorage.setItem('token', response.token);
+      setUser(response.user);
+      setIsAuthenticated(true);
+      await checkAuth();
+      return response;
+    } catch (error) {
+      throw error;
+    }
+  };
+
+  const register = async (data) => {
+    try {
+      const response = await authService.register(data);
+      localStorage.setItem('token', response.token);
+      setUser(response.user);
+      setIsAuthenticated(true);
+      return response;
+    } catch (error) {
+      throw error;
+    }
+  };
+
+  const googleLogin = async (data) => {
+    try {
+      const response = await authService.googleAuth(data);
+      localStorage.setItem('token', response.token);
+      setUser(response.user);
+      setIsAuthenticated(true);
+      await checkAuth();
+      return response;
+    } catch (error) {
+      throw error;
+    }
+  };
+
+  const facebookLogin = async (data) => {
+    try {
+      const response = await authService.facebookAuth(data);
+      localStorage.setItem('token', response.token);
+      setUser(response.user);
+      setIsAuthenticated(true);
+      await checkAuth();
+      return response;
+    } catch (error) {
+      throw error;
+    }
+  };
+
+  const logout = () => {
+    localStorage.removeItem('token');
+    setUser(null);
+    setProfile(null);
+    setIsAuthenticated(false);
+  };
+
+  const updateProfile = (updatedProfile) => {
+    setProfile(updatedProfile);
+  };
+
+  const value = {
+    user,
+    profile,
+    loading,
+    isAuthenticated,
+    login,
+    register,
+    googleLogin,
+    facebookLogin,
+    logout,
+    updateProfile
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
+```
+
+### File: frontend/src/services/api.js
+```javascript
+import axios from 'axios';
+
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
+const api = axios.create({
+  baseURL: API_URL,
+  headers: {
+    'Content-Type': 'application/json'
+  }
+});
+
+// Request interceptor
+api.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Response interceptor
+api.interceptors.response.use(
+  (response) => {
+    return response.data;
+  },
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token');
+      window.location.href = '/login';
+    }
+    return Promise.reject(error.response?.data || error.message);
+  }
+);
+
+export default api;
+```
+
+### File: frontend/src/services/authService.js
+```javascript
+import api from './api';
+
+export const authService = {
+  login: async (credentials) => {
+    return await api.post('/auth/login', credentials);
+  },
+
+  register: async (data) => {
+    return await api.post('/auth/register', data);
+  },
+
+  googleAuth: async (data) => {
+    return await api.post('/auth/google', data);
+  },
+
+  facebookAuth: async (data) => {
+    return await api.post('/auth/facebook', data);
+  },
+
+  getMe: async () => {
+    return await api.get('/auth/me');
+  }
+};
+```
+
+### File: frontend/src/services/prescriptionService.js
+```javascript
+import api from './api';
+
+export const prescriptionService = {
+  createPrescription: async (data) => {
+    return await api.post('/prescription', data);
+  },
+
+  updatePrescription: async (id, data) => {
+    return await api.put(`/prescription/${id}`, data);
+  },
+
+  completePrescription: async (id, canvasImages) => {
+    return await api.put(`/prescription/${id}/complete`, { canvasImages });
+  },
+
+  sendPrescription: async (id) => {
+    return await api.post(`/prescription/${id}/send`);
+  },
+
+  getPrescriptions: async () => {
+    return await api.get('/prescription');
+  },
+
+  getPrescriptionById: async (id) => {
+    return await api.get(`/prescription/${id}`);
+  },
+
+  deletePrescription: async (id) => {
+    return await api.delete(`/prescription/${id}`);
+  },
+
+  createPatient: async (data) => {
+    return await api.post('/prescription/patients', data);
+  }
+};
+```
+
+### File: frontend/src/components/Auth/Login.jsx
+```javascript
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Form, Input, Button, Card, Tabs, message, Space, Divider } from 'antd';
+import {
+  UserOutlined,
+  LockOutlined,
+  MailOutlined,
+  PhoneOutlined,
+  GoogleOutlined,
+  FacebookOutlined
+} from '@ant-design/icons';
+import { useAuth } from '../../context/AuthContext';
+import GoogleLogin from 'react-google-login';
+import FacebookLogin from 'react-facebook-login/dist/facebook-login-render-props';
+import './Login.css';
+
+const Login = () => {
+  const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState('login');
+  const { login, register, googleLogin, facebookLogin, isAuthenticated, user } = useAuth();
+  const navigate = useNavigate();
+
+  React.useEffect(() => {
+    if (isAuthenticated && user) {
+      redirectToDashboard(user.role);
+    }
+  }, [isAuthenticated, user]);
+
+  const redirectToDashboard = (role) => {
+    switch (role) {
+      case 'doctor':
+        navigate('/doctor/dashboard');
+        break;
+      case 'laboratory':
+        navigate('/lab/dashboard');
+        break;
+      case 'admin':
+        navigate('/admin/dashboard');
+        break;
+      default:
+        navigate('/');
+    }
+  };
+
+  const onLoginFinish = async (values) => {
+    setLoading(true);
+    try {
+      const response = await login(values);
+      message.success('Login successful!');
+      
+      if (!response.user.isApproved && response.user.role !== 'admin') {
+        message.warning('Your account is pending approval from admin');
+      } else {
+        redirectToDashboard(response.user.role);
+      }
+    } catch (error) {
+      message.error(error.message || 'Login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onRegisterFinish = async (values) => {
+    setLoading(true);
+    try {
+      const response = await register(values);
+      message.success('Registration successful! Please wait for admin approval.');
+      setActiveTab('login');
+    } catch (error) {
+      message.error(error.message || 'Registration failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onGoogleSuccess = async (response) => {
+    try {
+      const data = {
+        googleId: response.googleId,
+        email: response.profileObj.email,
+        name: response.profileObj.name,
+        avatar: response.profileObj.imageUrl,
+        role: 'doctor' // Default role, can be changed
+      };
+      
+      const result = await googleLogin(data);
+      message.success('Google login successful!');
+      redirectToDashboard(result.user.role);
+    } catch (error) {
+      message.error('Google login failed');
+    }
+  };
+
+  const onGoogleFailure = (error) => {
+    console.error('Google login error:', error);
+    message.error('Google login failed');
+  };
+
+  const onFacebookResponse = async (response) => {
+    if (response.accessToken) {
+      try {
+        const data = {
+          facebookId: response.id,
+          email: response.email,
+          name: response.name,
+          avatar: response.picture?.data?.url,
+          role: 'doctor' // Default role
+        };
+        
+        const result = await facebookLogin(data);
+        message.success('Facebook login successful!');
+        redirectToDashboard(result.user.role);
+      } catch (error) {
+        message.error('Facebook login failed');
+      }
+    }
+  };
+
+  const loginForm = (
+    <Form
+      name="login"
+      onFinish={onLoginFinish}
+      autoComplete="off"
+      layout="vertical"
+    >
+      <Form.Item
+        name="email"
+        rules={[
+          { required: true, message: 'Please input your email!' },
+          { type: 'email', message: 'Please enter a valid email!' }
+        ]}
+      >
+        <Input
+          prefix={<MailOutlined />}
+          placeholder="Email"
+          size="large"
+        />
+      </Form.Item>
+
+      <Form.Item
+        name="password"
+        rules={[{ required: true, message: 'Please input your password!' }]}
+      >
+        <Input.Password
+          prefix={<LockOutlined />}
+          placeholder="Password"
+          size="large"
+        />
+      </Form.Item>
+
+      <Form.Item>
+        <Button type="primary" htmlType="submit" loading={loading} block size="large">
+          Log in
+        </Button>
+      </Form.Item>
+
+      <Divider>Or login with</Divider>
+
+      <Space direction="vertical" style={{ width: '100%' }} size="middle">
+        <GoogleLogin
+          clientId={process.env.REACT_APP_GOOGLE_CLIENT_ID}
+          render={(renderProps) => (
+            <Button
+              icon={<GoogleOutlined />}
+              onClick={renderProps.onClick}
+              disabled={renderProps.disabled}
+              block
+              size="large"
+            >
+              Continue with Google
+            </Button>
+          )}
+          onSuccess={onGoogleSuccess}
+          onFailure={onGoogleFailure}
+          cookiePolicy={'single_host_origin'}
+        />
+
+        <FacebookLogin
+          appId={process.env.REACT_APP_FACEBOOK_APP_ID}
+          callback={onFacebookResponse}
+          fields="name,email,picture"
+          render={(renderProps) => (
+            <Button
+              icon={<FacebookOutlined />}
+              onClick={renderProps.onClick}
+              block
+              size="large"
+            >
+              Continue with Facebook
+            </Button>
+          )}
+        />
+      </Space>
+    </Form>
+  );
+
+  const registerForm = (
+    <Form
+      name="register"
+      onFinish={onRegisterFinish}
+      autoComplete="off"
+      layout="vertical"
+    >
+      <Form.Item
+        name="name"
+        rules={[{ required: true, message: 'Please input your name!' }]}
+      >
+        <Input
+          prefix={<UserOutlined />}
+          placeholder="Full Name"
+          size="large"
+        />
+      </Form.Item>
+
+      <Form.Item
+        name="email"
+        rules={[
+          { required: true, message: 'Please input your email!' },
+          { type: 'email', message: 'Please enter a valid email!' }
+        ]}
+      >
+        <Input
+          prefix={<MailOutlined />}
+          placeholder="Email"
+          size="large"
+        />
+      </Form.Item>
+
+      <Form.Item
+        name="password"
+        rules={[
+          { required: true, message: 'Please input your password!' },
+          { min: 6, message: 'Password must be at least 6 characters!' }
+        ]}
+      >
+        <Input.Password
+          prefix={<LockOutlined />}
+          placeholder="Password"
+          size="large"
+        />
+      </Form.Item>
+
+      <Form.Item
+        name="role"
+        rules={[{ required: true, message: 'Please select your role!' }]}
+      >
+        <Input.Group compact>
+          <Button.Group style={{ width: '100%' }}>
+            <Button style={{ width: '50%' }} size="large">Doctor</Button>
+            <Button style={{ width: '50%' }} size="large">Laboratory</Button>
+          </Button.Group>
+        </Input.Group>
+      </Form.Item>
+
+      <Form.Item
+        name="registrationNumber"
+        rules={[{ required: true, message: 'Please input your registration number!' }]}
+      >
+        <Input
+          placeholder="Registration Number"
+          size="large"
+        />
+      </Form.Item>
+
+      <Form.Item
+        name="contactNumber"
+        rules={[{ required: true, message: 'Please input your contact number!' }]}
+      >
+        <Input
+          prefix={<PhoneOutlined />}
+          placeholder="Contact Number"
+          size="large"
+        />
+      </Form.Item>
+
+      <Form.Item>
+        <Button type="primary" htmlType="submit" loading={loading} block size="large">
+          Register
+        </Button>
+      </Form.Item>
+    </Form>
+  );
+
+  return (
+    <div className="login-container">
+      <Card
+        className="login-card"
+        title={
+          <div className="login-header">
+            <h2>Digital Prescription</h2>
+            <p>Healthcare Management System</p>
+          </div>
+        }
+      >
+        <Tabs
+          activeKey={activeTab}
+          onChange={setActiveTab}
+          centered
+          items={[
+            {
+              key: 'login',
+              label: 'Login',
+              children: loginForm
+            },
+            {
+              key: 'register',
+              label: 'Register',
+              children: registerForm
+            }
+          ]}
+        />
+      </Card>
+    </div>
+  );
+};
+
+export default Login;
+```
+
+### File: frontend/src/components/Auth/Login.css
+```css
+.login-container {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 20px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 450px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+}
+
+.login-header {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.login-header h2 {
+  margin: 0;
+  color: #1890ff;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.
